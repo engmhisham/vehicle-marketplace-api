@@ -32,72 +32,78 @@ export class WalletService {
   async topUp(userId: string, dto: TopUpDto) {
     const wallet = await this.getOrCreateWallet(userId);
 
-    const newBalance = Number(wallet.balance) + dto.amount;
-
-    const [updatedWallet, transaction] = await this.prisma.$transaction([
-      this.prisma.wallet.update({
+    // Use interactive transaction with atomic increment to prevent race conditions
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updatedWallet = await tx.wallet.update({
         where: { id: wallet.id },
-        data: { balance: newBalance },
-      }),
-      this.prisma.transaction.create({
+        data: { balance: { increment: dto.amount } },
+      });
+
+      const transaction = await tx.transaction.create({
         data: {
           walletId: wallet.id,
           type: TransactionType.DEPOSIT,
           amount: dto.amount,
-          balance: newBalance,
+          balance: updatedWallet.balance,
           status: TransactionStatus.COMPLETED,
           referenceId: dto.paymentReference,
           referenceType: 'payment_gateway',
           description: 'Wallet top-up',
           metadata: { paymentReference: dto.paymentReference },
         },
-      }),
-    ]);
+      });
 
-    this.logger.log(`Wallet ${wallet.id} topped up: +${dto.amount}. New balance: ${newBalance}`);
+      return { wallet: updatedWallet, transaction };
+    });
 
-    return {
-      wallet: updatedWallet,
-      transaction,
-    };
+    this.logger.log(`Wallet ${wallet.id} topped up: +${dto.amount}`);
+
+    return result;
   }
 
   async requestWithdrawal(userId: string, dto: WithdrawDto) {
-    const wallet = await this.getOrCreateWallet(userId);
+    // Use interactive transaction with optimistic check to prevent race conditions
+    const result = await this.prisma.$transaction(async (tx) => {
+      // Re-read wallet inside transaction for consistency
+      const wallet = await tx.wallet.findUnique({ where: { userId } });
+      if (!wallet) {
+        throw new BadRequestException('Wallet not found');
+      }
 
-    if (Number(wallet.balance) < dto.amount) {
-      throw new BadRequestException('Insufficient balance');
-    }
+      if (Number(wallet.balance) < dto.amount) {
+        throw new BadRequestException('Insufficient balance');
+      }
 
-    // Hold the amount
-    const newBalance = Number(wallet.balance) - dto.amount;
-
-    const [updatedWallet, transaction, withdrawal] = await this.prisma.$transaction([
-      this.prisma.wallet.update({
+      // Atomic decrement
+      const updatedWallet = await tx.wallet.update({
         where: { id: wallet.id },
-        data: { balance: newBalance },
-      }),
-      this.prisma.transaction.create({
+        data: { balance: { decrement: dto.amount } },
+      });
+
+      const transaction = await tx.transaction.create({
         data: {
           walletId: wallet.id,
           type: TransactionType.WITHDRAWAL,
           amount: -dto.amount,
-          balance: newBalance,
+          balance: updatedWallet.balance,
           status: TransactionStatus.PENDING,
           description: 'Withdrawal request',
         },
-      }),
-      this.prisma.withdrawal.create({
+      });
+
+      const withdrawal = await tx.withdrawal.create({
         data: {
           walletId: wallet.id,
           amount: dto.amount,
           note: dto.note,
           status: WithdrawalStatus.PENDING,
         },
-      }),
-    ]);
+      });
 
-    return { withdrawal, transaction };
+      return { withdrawal, transaction };
+    });
+
+    return result;
   }
 
   async getTransactions(userId: string, pagination: PaginationDto) {
@@ -133,71 +139,62 @@ export class WalletService {
   }
 
   async processWithdrawal(withdrawalId: string, adminId: string, approved: boolean, note?: string) {
-    const withdrawal = await this.prisma.withdrawal.findUnique({
-      where: { id: withdrawalId },
-      include: { wallet: true },
-    });
+    // Use interactive transaction to prevent race conditions on concurrent processing
+    await this.prisma.$transaction(async (tx) => {
+      // Atomically update only if still PENDING (prevents double-processing)
+      const result = await tx.withdrawal.updateMany({
+        where: { id: withdrawalId, status: WithdrawalStatus.PENDING },
+        data: {
+          status: approved ? WithdrawalStatus.APPROVED : WithdrawalStatus.REJECTED,
+          processedAt: new Date(),
+          processedBy: adminId,
+          note,
+        },
+      });
 
-    if (!withdrawal) {
-      throw new NotFoundException('Withdrawal not found');
-    }
+      if (result.count === 0) {
+        throw new BadRequestException('Withdrawal not found or already processed');
+      }
 
-    if (withdrawal.status !== WithdrawalStatus.PENDING) {
-      throw new BadRequestException('Withdrawal already processed');
-    }
+      const withdrawal = await tx.withdrawal.findUnique({
+        where: { id: withdrawalId },
+        include: { wallet: true },
+      });
 
-    if (approved) {
-      await this.prisma.$transaction([
-        this.prisma.withdrawal.update({
-          where: { id: withdrawalId },
-          data: {
-            status: WithdrawalStatus.APPROVED,
-            processedAt: new Date(),
-            processedBy: adminId,
-            note,
-          },
-        }),
-        this.prisma.transaction.updateMany({
+      if (!withdrawal) {
+        throw new NotFoundException('Withdrawal not found');
+      }
+
+      if (approved) {
+        await tx.transaction.updateMany({
           where: {
             walletId: withdrawal.walletId,
             type: TransactionType.WITHDRAWAL,
             status: TransactionStatus.PENDING,
           },
           data: { status: TransactionStatus.COMPLETED },
-        }),
-      ]);
-    } else {
-      // Refund the held amount
-      const newBalance = Number(withdrawal.wallet.balance) + Number(withdrawal.amount);
-
-      await this.prisma.$transaction([
-        this.prisma.withdrawal.update({
-          where: { id: withdrawalId },
-          data: {
-            status: WithdrawalStatus.REJECTED,
-            processedAt: new Date(),
-            processedBy: adminId,
-            note,
-          },
-        }),
-        this.prisma.wallet.update({
+        });
+      } else {
+        // Refund using atomic increment
+        const updatedWallet = await tx.wallet.update({
           where: { id: withdrawal.walletId },
-          data: { balance: newBalance },
-        }),
-        this.prisma.transaction.create({
+          data: { balance: { increment: Number(withdrawal.amount) } },
+        });
+
+        await tx.transaction.create({
           data: {
             walletId: withdrawal.walletId,
             type: TransactionType.REFUND,
             amount: Number(withdrawal.amount),
-            balance: newBalance,
+            balance: updatedWallet.balance,
             status: TransactionStatus.COMPLETED,
             referenceId: withdrawalId,
             referenceType: 'withdrawal_refund',
             description: `Withdrawal rejected: ${note || 'No reason provided'}`,
           },
-        }),
-      ]);
-    }
+        });
+      }
+    });
 
     return { message: `Withdrawal ${approved ? 'approved' : 'rejected'}` };
   }

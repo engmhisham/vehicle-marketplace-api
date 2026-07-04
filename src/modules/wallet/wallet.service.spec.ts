@@ -70,10 +70,18 @@ describe('WalletService', () => {
         balance: 500,
       });
 
-      mockPrisma.$transaction.mockResolvedValue([
-        { id: 'wallet-1', balance: 1500 },
-        { id: 'tx-1', amount: 1000, type: 'DEPOSIT' },
-      ]);
+      // Interactive transaction passes a callback - mock it to execute the callback
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const txMock = {
+          wallet: {
+            update: jest.fn().mockResolvedValue({ id: 'wallet-1', balance: 1500 }),
+          },
+          transaction: {
+            create: jest.fn().mockResolvedValue({ id: 'tx-1', amount: 1000, type: 'DEPOSIT' }),
+          },
+        };
+        return cb(txMock);
+      });
 
       const result = await service.topUp('user-1', { amount: 1000 });
       expect(result.wallet.balance).toBe(1500);
@@ -86,6 +94,20 @@ describe('WalletService', () => {
         id: 'wallet-1',
         userId: 'user-1',
         balance: 100,
+      });
+
+      // Interactive transaction - mock to execute the callback
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const txMock = {
+          wallet: {
+            findUnique: jest.fn().mockResolvedValue({
+              id: 'wallet-1',
+              userId: 'user-1',
+              balance: 100,
+            }),
+          },
+        };
+        return cb(txMock);
       });
 
       await expect(service.requestWithdrawal('user-1', { amount: 500 })).rejects.toThrow(
