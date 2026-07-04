@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
 
@@ -7,12 +7,30 @@ export class SearchService {
   constructor(private readonly prisma: PrismaService) {}
 
   async searchVehicles(query: string, pagination: PaginationDto) {
-    // PostgreSQL full-text search using raw query for proper ranking
-    const searchTerms = query
-      .trim()
+    if (!query || query.trim().length === 0) {
+      throw new BadRequestException('Search query is required');
+    }
+
+    if (query.length > 100) {
+      throw new BadRequestException('Search query too long');
+    }
+
+    // Sanitize input: remove special tsquery characters to prevent injection
+    const sanitized = query.replace(/[&|!():<>*\\'"]/g, ' ').trim();
+    if (sanitized.length === 0) {
+      return paginate([], 0, pagination.page, pagination.limit);
+    }
+
+    // Build safe search terms
+    const searchTerms = sanitized
       .split(/\s+/)
+      .filter((term) => term.length > 0)
       .map((term) => `${term}:*`)
       .join(' & ');
+
+    if (!searchTerms) {
+      return paginate([], 0, pagination.page, pagination.limit);
+    }
 
     const vehicles = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -59,15 +77,21 @@ export class SearchService {
   }
 
   async suggest(query: string) {
-    // Get autocomplete suggestions
+    if (!query || query.trim().length < 2) {
+      return [];
+    }
+
+    // Sanitize for ILIKE - escape special characters
+    const sanitized = query.replace(/[%_\\]/g, '\\$&').trim();
+
     const suggestions = await this.prisma.$queryRaw<any[]>`
       SELECT DISTINCT make, model
       FROM vehicles
       WHERE
         status = 'PUBLISHED'
         AND (
-          make ILIKE ${`%${query}%`}
-          OR model ILIKE ${`%${query}%`}
+          make ILIKE ${`%${sanitized}%`}
+          OR model ILIKE ${`%${sanitized}%`}
         )
       LIMIT 10
     `;

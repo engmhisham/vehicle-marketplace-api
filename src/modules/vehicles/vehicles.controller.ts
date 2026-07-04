@@ -10,6 +10,7 @@ import {
   Query,
   UseGuards,
   Req,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -96,12 +97,35 @@ export class VehiclesController {
   @ApiConsumes('multipart/form-data')
   @ApiResponse({ status: 201, description: 'Images uploaded' })
   async uploadImages(@Param('id') id: string, @CurrentUser() user: JwtPayload, @Req() req: any) {
+    const ALLOWED_MIMETYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
+    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+    const MAX_FILES = 10;
+
     const parts = req.files();
     const files: Array<{ buffer: Buffer; originalName: string; mimetype: string }> = [];
 
     for await (const part of parts) {
+      if (files.length >= MAX_FILES) {
+        throw new BadRequestException(`Maximum ${MAX_FILES} files allowed per upload`);
+      }
+
+      if (!ALLOWED_MIMETYPES.includes(part.mimetype)) {
+        throw new BadRequestException(
+          `Invalid file type: ${part.mimetype}. Allowed: ${ALLOWED_MIMETYPES.join(', ')}`,
+        );
+      }
+
       const buffer = await part.toBuffer();
+
+      if (buffer.length > MAX_FILE_SIZE) {
+        throw new BadRequestException(`File ${part.filename} exceeds 5MB limit`);
+      }
+
       files.push({ buffer, originalName: part.filename, mimetype: part.mimetype });
+    }
+
+    if (files.length === 0) {
+      throw new BadRequestException('No files provided');
     }
 
     return this.vehiclesService.uploadImages(id, user.sub, user.role, files);
