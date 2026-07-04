@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { UserRole, UserStatus, VehicleStatus, AuctionStatus } from '@prisma/client';
+import { Prisma, UserRole, UserStatus, VehicleStatus, AuctionStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
 
@@ -48,7 +48,7 @@ export class AdminService {
   }
 
   async listUsers(pagination: PaginationDto, role?: UserRole, status?: UserStatus) {
-    const where: any = {};
+    const where: Prisma.UserWhereInput = {};
     if (role) where.role = role;
     if (status) where.status = status;
 
@@ -155,7 +155,7 @@ export class AdminService {
   }
 
   async getAuditLogs(pagination: PaginationDto, entity?: string) {
-    const where: any = {};
+    const where: Prisma.AuditLogWhereInput = {};
     if (entity) where.entity = entity;
 
     const [logs, total] = await Promise.all([

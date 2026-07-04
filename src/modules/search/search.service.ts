@@ -2,6 +2,29 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
 
+export interface VehicleSearchResult {
+  id: string;
+  make: string;
+  model: string;
+  year: number;
+  price: number;
+  mileage: number | null;
+  condition: string;
+  fuelType: string | null;
+  transmission: string | null;
+  color: string | null;
+  location: string | null;
+  status: string;
+  viewCount: number;
+  createdAt: Date;
+  rank: number;
+}
+
+export interface VehicleSuggestion {
+  make: string;
+  model: string;
+}
+
 @Injectable()
 export class SearchService {
   constructor(private readonly prisma: PrismaService) {}
@@ -32,7 +55,7 @@ export class SearchService {
       return paginate([], 0, pagination.page, pagination.limit);
     }
 
-    const vehicles = await this.prisma.$queryRaw<any[]>`
+    const vehicles = await this.prisma.$queryRaw<VehicleSearchResult[]>`
       SELECT
         v.id,
         v.make,
@@ -84,7 +107,7 @@ export class SearchService {
     // Sanitize for ILIKE - escape special characters
     const sanitized = query.replace(/[%_\\]/g, '\\$&').trim();
 
-    const suggestions = await this.prisma.$queryRaw<any[]>`
+    const suggestions = await this.prisma.$queryRaw<VehicleSuggestion[]>`
       SELECT DISTINCT make, model
       FROM vehicles
       WHERE
