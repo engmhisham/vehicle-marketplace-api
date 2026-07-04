@@ -22,8 +22,12 @@ export class NotificationsService {
       },
     });
 
-    // Publish for real-time delivery
-    await this.redisService.publish(`notifications:${userId}`, JSON.stringify(notification));
+    // Publish for real-time delivery (non-blocking)
+    try {
+      await this.redisService.publish(`notifications:${userId}`, JSON.stringify(notification));
+    } catch (error) {
+      // Notification is persisted in DB, real-time delivery is best-effort
+    }
 
     return notification;
   }

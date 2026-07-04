@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { SendMessageDto } from './dto/send-message.dto';
@@ -32,21 +32,25 @@ export class ChatService {
       data: { lastMessageAt: new Date() },
     });
 
-    // Increment unread counter in Redis
-    await this.redisService.hincrby(`unread:${dto.recipientId}`, room.id, 1);
-
-    // Publish for real-time delivery
-    await this.redisService.publish(
-      `chat:${room.id}`,
-      JSON.stringify({
-        id: message.id,
-        roomId: room.id,
-        senderId,
-        senderName: `${message.sender.firstName || ''} ${message.sender.lastName || ''}`.trim(),
-        content: dto.content,
-        createdAt: message.createdAt.toISOString(),
-      }),
-    );
+    // Increment unread counter and publish for real-time delivery (non-blocking)
+    try {
+      await this.redisService.hincrby(`unread:${dto.recipientId}`, room.id, 1);
+      await this.redisService.publish(
+        `chat:${room.id}`,
+        JSON.stringify({
+          id: message.id,
+          roomId: room.id,
+          senderId,
+          senderName: `${message.sender.firstName || ''} ${message.sender.lastName || ''}`.trim(),
+          content: dto.content,
+          createdAt: message.createdAt.toISOString(),
+        }),
+      );
+    } catch (error) {
+      // Log but don't fail - message is already persisted in DB
+      const logger = new Logger('ChatService');
+      logger.error(`Failed to publish chat event for room ${room.id}`, error);
+    }
 
     return message;
   }

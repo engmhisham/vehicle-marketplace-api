@@ -199,18 +199,22 @@ export class AuctionsService {
         }),
       ]);
 
-      // Publish bid event via Redis for real-time updates
-      await this.redisService.publish(
-        `auction:${auctionId}:bids`,
-        JSON.stringify({
-          bidId: bid.id,
-          auctionId,
-          bidderId,
-          bidderName: `${bid.bidder.firstName || ''} ${bid.bidder.lastName || ''}`.trim(),
-          amount: dto.amount,
-          timestamp: new Date().toISOString(),
-        }),
-      );
+      // Publish bid event via Redis for real-time updates (non-blocking)
+      try {
+        await this.redisService.publish(
+          `auction:${auctionId}:bids`,
+          JSON.stringify({
+            bidId: bid.id,
+            auctionId,
+            bidderId,
+            bidderName: `${bid.bidder.firstName || ''} ${bid.bidder.lastName || ''}`.trim(),
+            amount: dto.amount,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+      } catch (error) {
+        this.logger.error(`Failed to publish bid event for auction ${auctionId}`, error);
+      }
 
       return bid;
     } finally {
@@ -260,15 +264,19 @@ export class AuctionsService {
       }),
     ]);
 
-    // Publish auction end event
-    await this.redisService.publish(
-      `auction:${auctionId}:status`,
-      JSON.stringify({
-        status: 'ENDED',
-        winnerId,
-        finalPrice: auction.currentPrice,
-      }),
-    );
+    // Publish auction end event (non-blocking)
+    try {
+      await this.redisService.publish(
+        `auction:${auctionId}:status`,
+        JSON.stringify({
+          status: 'ENDED',
+          winnerId,
+          finalPrice: auction.currentPrice,
+        }),
+      );
+    } catch (error) {
+      this.logger.error(`Failed to publish auction end event for ${auctionId}`, error);
+    }
 
     this.logger.log(`Auction ${auctionId} ended. Winner: ${winnerId || 'none'}`);
   }
