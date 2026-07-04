@@ -1,0 +1,380 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS ====================
+
+enum UserRole {
+  BUYER
+  DEALER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum VehicleStatus {
+  DRAFT
+  PUBLISHED
+  IN_AUCTION
+  SOLD
+  ARCHIVED
+}
+
+enum VehicleCondition {
+  NEW
+  USED
+  CERTIFIED_PRE_OWNED
+}
+
+enum FuelType {
+  GASOLINE
+  DIESEL
+  ELECTRIC
+  HYBRID
+  PLUGIN_HYBRID
+}
+
+enum TransmissionType {
+  AUTOMATIC
+  MANUAL
+  CVT
+}
+
+enum AuctionStatus {
+  SCHEDULED
+  ACTIVE
+  ENDED
+  CANCELLED
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  BID_HOLD
+  BID_RELEASE
+  AUCTION_WIN_DEBIT
+  AUCTION_WIN_CREDIT
+  REFUND
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REVERSED
+}
+
+enum NotificationType {
+  AUCTION_STARTED
+  AUCTION_ENDING_SOON
+  OUTBID
+  AUCTION_WON
+  AUCTION_LOST
+  AUCTION_SOLD
+  MESSAGE_RECEIVED
+  PAYMENT_RECEIVED
+  WITHDRAWAL_APPROVED
+  WITHDRAWAL_REJECTED
+  VEHICLE_APPROVED
+  VEHICLE_REJECTED
+  SYSTEM
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+// ==================== MODELS ====================
+
+model User {
+  id          String     @id @default(uuid())
+  phone       String     @unique
+  password    String?
+  firstName   String?    @map("first_name")
+  lastName    String?    @map("last_name")
+  email       String?    @unique
+  avatar      String?
+  role        UserRole   @default(BUYER)
+  status      UserStatus @default(ACTIVE)
+  isVerified  Boolean    @default(false) @map("is_verified")
+  lastLoginAt DateTime?  @map("last_login_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  vehicles      Vehicle[]
+  bids          Bid[]
+  auctions      Auction[]       @relation("AuctionSeller")
+  wonAuctions   Auction[]       @relation("AuctionWinner")
+  sentMessages  ChatMessage[]   @relation("MessageSender")
+  chatRooms1    ChatRoom[]      @relation("ChatParticipant1")
+  chatRooms2    ChatRoom[]      @relation("ChatParticipant2")
+  wallet        Wallet?
+  notifications Notification[]
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  phone     String
+  code      String
+  expiresAt DateTime @map("expires_at")
+  isUsed    Boolean  @default(false) @map("is_used")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([phone, code])
+  @@map("otp_codes")
+}
+
+model Vehicle {
+  id            String           @id @default(uuid())
+  sellerId      String           @map("seller_id")
+  make          String
+  model         String
+  year          Int
+  price         Decimal          @db.Decimal(12, 2)
+  mileage       Int?
+  condition     VehicleCondition @default(USED)
+  fuelType      FuelType?        @map("fuel_type")
+  transmission  TransmissionType?
+  color         String?
+  vin           String?          @unique
+  description   String?
+  location      String?
+  status        VehicleStatus    @default(DRAFT)
+  viewCount     Int              @default(0) @map("view_count")
+  approvedAt    DateTime?        @map("approved_at")
+  approvedBy    String?          @map("approved_by")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  seller  User           @relation(fields: [sellerId], references: [id])
+  images  VehicleImage[]
+  auction Auction?
+
+  // Full-text search
+  @@index([make, model])
+  @@index([status])
+  @@index([sellerId])
+  @@index([price])
+  @@index([year])
+  @@map("vehicles")
+}
+
+model VehicleImage {
+  id        String  @id @default(uuid())
+  vehicleId String  @map("vehicle_id")
+  url       String
+  key       String
+  isPrimary Boolean @default(false) @map("is_primary")
+  order     Int     @default(0)
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId])
+  @@map("vehicle_images")
+}
+
+model Auction {
+  id            String        @id @default(uuid())
+  vehicleId     String        @unique @map("vehicle_id")
+  sellerId      String        @map("seller_id")
+  winnerId      String?       @map("winner_id")
+  startingPrice Decimal       @db.Decimal(12, 2) @map("starting_price")
+  currentPrice  Decimal       @db.Decimal(12, 2) @map("current_price")
+  bidIncrement  Decimal       @db.Decimal(12, 2) @map("bid_increment")
+  startTime     DateTime      @map("start_time")
+  endTime       DateTime      @map("end_time")
+  status        AuctionStatus @default(SCHEDULED)
+  totalBids     Int           @default(0) @map("total_bids")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+  seller  User    @relation("AuctionSeller", fields: [sellerId], references: [id])
+  winner  User?   @relation("AuctionWinner", fields: [winnerId], references: [id])
+  bids    Bid[]
+
+  @@index([status])
+  @@index([endTime])
+  @@index([sellerId])
+  @@map("auctions")
+}
+
+model Bid {
+  id        String   @id @default(uuid())
+  auctionId String   @map("auction_id")
+  bidderId  String   @map("bidder_id")
+  amount    Decimal  @db.Decimal(12, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  auction Auction @relation(fields: [auctionId], references: [id])
+  bidder  User    @relation(fields: [bidderId], references: [id])
+
+  @@index([auctionId])
+  @@index([bidderId])
+  @@map("bids")
+}
+
+model ChatRoom {
+  id             String   @id @default(uuid())
+  participant1Id String   @map("participant1_id")
+  participant2Id String   @map("participant2_id")
+  vehicleId      String?  @map("vehicle_id")
+  lastMessageAt  DateTime? @map("last_message_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  // Relations
+  participant1 User          @relation("ChatParticipant1", fields: [participant1Id], references: [id])
+  participant2 User          @relation("ChatParticipant2", fields: [participant2Id], references: [id])
+  messages     ChatMessage[]
+
+  @@unique([participant1Id, participant2Id, vehicleId])
+  @@index([participant1Id])
+  @@index([participant2Id])
+  @@map("chat_rooms")
+}
+
+model ChatMessage {
+  id        String    @id @default(uuid())
+  roomId    String    @map("room_id")
+  senderId  String    @map("sender_id")
+  content   String
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  room   ChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender User     @relation("MessageSender", fields: [senderId], references: [id])
+
+  @@index([roomId])
+  @@index([senderId])
+  @@map("chat_messages")
+}
+
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  balance   Decimal  @default(0) @db.Decimal(12, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id])
+  transactions Transaction[]
+  withdrawals  Withdrawal[]
+
+  @@map("wallets")
+}
+
+model Transaction {
+  id              String            @id @default(uuid())
+  walletId        String            @map("wallet_id")
+  type            TransactionType
+  amount          Decimal           @db.Decimal(12, 2)
+  balance         Decimal           @db.Decimal(12, 2)
+  status          TransactionStatus @default(PENDING)
+  referenceId     String?           @map("reference_id")
+  referenceType   String?           @map("reference_type")
+  description     String?
+  metadata        Json?
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  // Relations
+  wallet Wallet @relation(fields: [walletId], references: [id])
+
+  @@index([walletId])
+  @@index([type])
+  @@index([createdAt])
+  @@map("transactions")
+}
+
+model Withdrawal {
+  id        String           @id @default(uuid())
+  walletId  String           @map("wallet_id")
+  amount    Decimal          @db.Decimal(12, 2)
+  status    WithdrawalStatus @default(PENDING)
+  note      String?
+  processedAt DateTime?      @map("processed_at")
+  processedBy String?        @map("processed_by")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  wallet Wallet @relation(fields: [walletId], references: [id])
+
+  @@index([walletId])
+  @@index([status])
+  @@map("withdrawals")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  isRead    Boolean          @default(false) @map("is_read")
+  readAt    DateTime?        @map("read_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  action     String
+  entity     String
+  entityId   String?  @map("entity_id")
+  oldData    Json?    @map("old_data")
+  newData    Json?    @map("new_data")
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
