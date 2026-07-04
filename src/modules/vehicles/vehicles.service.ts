@@ -232,32 +232,44 @@ export class VehiclesService {
       throw new ForbiddenException('You can only upload images to your own vehicles');
     }
 
-    const existingImages = await this.prisma.vehicleImage.count({
-      where: { vehicleId },
-    });
-
-    const images = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const { key, url } = await this.storageService.upload(
+    // Upload files to storage first
+    const uploaded: Array<{ key: string; url: string }> = [];
+    for (const file of files) {
+      const result = await this.storageService.upload(
         file.buffer,
         file.originalName,
         file.mimetype,
         `vehicles/${vehicleId}`,
       );
+      uploaded.push(result);
+    }
 
-      const image = await this.prisma.vehicleImage.create({
-        data: {
-          vehicleId,
-          url,
-          key,
-          isPrimary: existingImages === 0 && i === 0,
-          order: existingImages + i,
-        },
+    // Use transaction with MAX(order) to prevent ordering race condition
+    const images = await this.prisma.$transaction(async (tx) => {
+      const maxOrder = await tx.vehicleImage.aggregate({
+        where: { vehicleId },
+        _max: { order: true },
+        _count: true,
       });
 
-      images.push(image);
-    }
+      const startOrder = (maxOrder._max.order ?? -1) + 1;
+      const hasExisting = maxOrder._count > 0;
+
+      const created = [];
+      for (let i = 0; i < uploaded.length; i++) {
+        const image = await tx.vehicleImage.create({
+          data: {
+            vehicleId,
+            url: uploaded[i].url,
+            key: uploaded[i].key,
+            isPrimary: !hasExisting && i === 0,
+            order: startOrder + i,
+          },
+        });
+        created.push(image);
+      }
+      return created;
+    });
 
     return images;
   }
