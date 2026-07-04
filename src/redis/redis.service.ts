@@ -1,23 +1,68 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
+import Redis, { RedisOptions } from 'ioredis';
 
 @Injectable()
 export class RedisService implements OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
   private readonly client: Redis;
   private readonly subscriber: Redis;
   private readonly publisher: Redis;
+  private readonly subscriptions: Map<string, (message: string) => void> = new Map();
+  private reconnectAttempts = 0;
+  private readonly maxReconnectAttempts = 10;
 
   constructor(private readonly configService: ConfigService) {
-    const redisOptions = {
+    const redisOptions: RedisOptions = {
       host: this.configService.get<string>('redis.host', 'localhost'),
       port: this.configService.get<number>('redis.port', 6379),
       password: this.configService.get<string>('redis.password'),
+      retryStrategy: (times: number) => {
+        if (times > this.maxReconnectAttempts) {
+          this.logger.error(`Redis connection failed after ${times} attempts`);
+          return null; // Stop retrying
+        }
+        const delay = Math.min(times * 1000, 30000); // Exponential backoff, max 30s
+        this.logger.warn(`Redis reconnecting in ${delay}ms (attempt ${times})`);
+        return delay;
+      },
+      maxRetriesPerRequest: 3,
     };
 
     this.client = new Redis(redisOptions);
     this.subscriber = new Redis(redisOptions);
     this.publisher = new Redis(redisOptions);
+
+    this.setupSubscriberReconnection();
+  }
+
+  private setupSubscriberReconnection() {
+    this.subscriber.on('error', (error) => {
+      this.logger.error('Redis subscriber error', error.message);
+    });
+
+    this.subscriber.on('connect', () => {
+      this.logger.log('Redis subscriber connected');
+      this.reconnectAttempts = 0;
+    });
+
+    // Re-subscribe to all channels on reconnect
+    this.subscriber.on('ready', async () => {
+      if (this.subscriptions.size > 0) {
+        this.logger.log(`Re-subscribing to ${this.subscriptions.size} channels`);
+        for (const [channel] of this.subscriptions) {
+          if (channel.includes('*')) {
+            await this.subscriber.psubscribe(channel).catch((e) => {
+              this.logger.error(`Failed to psubscribe to ${channel}`, e);
+            });
+          } else {
+            await this.subscriber.subscribe(channel).catch((e) => {
+              this.logger.error(`Failed to subscribe to ${channel}`, e);
+            });
+          }
+        }
+      }
+    });
   }
 
   getClient(): Redis {
@@ -71,6 +116,7 @@ export class RedisService implements OnModuleDestroy {
   }
 
   async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
+    this.subscriptions.set(channel, callback);
     await this.subscriber.subscribe(channel);
     this.subscriber.on('message', (ch, message) => {
       if (ch === channel) {
