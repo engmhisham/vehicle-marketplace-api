@@ -1,0 +1,1 @@
+npx prettier --check "src/**/*.ts" --ignore-unknown
