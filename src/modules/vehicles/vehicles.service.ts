@@ -106,13 +106,43 @@ export class VehiclesService {
       throw new NotFoundException('Vehicle not found');
     }
 
-    // Increment view count
-    await this.prisma.vehicle.update({
-      where: { id },
-      data: { viewCount: { increment: 1 } },
-    });
+    // Increment view count in Redis (write-behind to DB)
+    try {
+      await this.redisService.getClient().hincrby('vehicle:views', id, 1);
+    } catch {
+      // Fallback: direct DB increment if Redis is down
+      await this.prisma.vehicle.update({
+        where: { id },
+        data: { viewCount: { increment: 1 } },
+      });
+    }
 
     return vehicle;
+  }
+
+  /**
+   * Flush accumulated view counts from Redis to PostgreSQL.
+   * Called periodically by a cron job.
+   */
+  async flushViewCounts() {
+    const viewCounts = await this.redisService.getClient().hgetall('vehicle:views');
+    if (!viewCounts || Object.keys(viewCounts).length === 0) return;
+
+    const entries = Object.entries(viewCounts);
+    for (const [vehicleId, count] of entries) {
+      const increment = parseInt(count, 10);
+      if (increment > 0) {
+        await this.prisma.vehicle
+          .update({
+            where: { id: vehicleId },
+            data: { viewCount: { increment } },
+          })
+          .catch(() => {
+            /* vehicle might have been deleted */
+          });
+        await this.redisService.getClient().hdel('vehicle:views', vehicleId);
+      }
+    }
   }
 
   async findByOwner(sellerId: string, filters: FilterVehiclesDto) {
