@@ -32,6 +32,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { AdminModule } from './modules/admin/admin.module';
 import { SearchModule } from './modules/search/search.module';
 import { HealthModule } from './modules/health/health.module';
+import { SentryModule } from './common/sentry/sentry.module';
 
 // Common
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
@@ -90,6 +91,7 @@ import { MetricsController } from './common/controllers/metrics.controller';
     DatabaseModule,
     RedisModule,
     StorageModule,
+    SentryModule,
 
     // Features
     AuthModule,

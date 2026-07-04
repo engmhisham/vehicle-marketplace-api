@@ -5,12 +5,17 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Inject,
+  Optional,
 } from '@nestjs/common';
 import { FastifyReply, FastifyRequest } from 'fastify';
+import { SentryService } from '../sentry/sentry.service';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(GlobalExceptionFilter.name);
+
+  constructor(@Optional() @Inject(SentryService) private readonly sentry?: SentryService) {}
 
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
@@ -42,6 +47,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         `Unhandled exception: ${exception instanceof Error ? exception.message : 'Unknown error'}`,
         exception instanceof Error ? exception.stack : undefined,
       );
+
+      // Report unhandled exceptions to Sentry
+      if (exception instanceof Error && this.sentry) {
+        this.sentry.captureException(exception, {
+          url: request.url,
+          method: request.method,
+          headers: request.headers,
+        });
+      }
     }
 
     const errorResponse = {
