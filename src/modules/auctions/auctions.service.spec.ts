@@ -124,7 +124,15 @@ describe('AuctionsService', () => {
               end_time: new Date(Date.now() + 86400000),
             },
           ]),
-          bid: { create: jest.fn().mockResolvedValue(bidResult) },
+          wallet: {
+            findUnique: jest.fn().mockResolvedValue({ id: 'w1', userId: 'user-1', balance: 50000 }),
+            update: jest.fn().mockResolvedValue({}),
+          },
+          transaction: { create: jest.fn().mockResolvedValue({}) },
+          bid: {
+            create: jest.fn().mockResolvedValue(bidResult),
+            findFirst: jest.fn().mockResolvedValue(null),
+          },
           auction: { update: jest.fn().mockResolvedValue({}) },
         };
         return cb(txMock);

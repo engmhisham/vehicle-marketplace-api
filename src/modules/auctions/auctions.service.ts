@@ -178,7 +178,61 @@ export class AuctionsService {
         );
       }
 
-      // Create bid
+      // === BID HOLD PATTERN ===
+      // 1. Check bidder has sufficient wallet balance
+      const bidderWallet = await tx.wallet.findUnique({ where: { userId: bidderId } });
+      if (!bidderWallet || Number(bidderWallet.balance) < dto.amount) {
+        throw new BadRequestException('Insufficient wallet balance to place this bid');
+      }
+
+      // 2. Hold the bid amount from bidder's wallet
+      await tx.wallet.update({
+        where: { id: bidderWallet.id },
+        data: { balance: { decrement: dto.amount } },
+      });
+      await tx.transaction.create({
+        data: {
+          walletId: bidderWallet.id,
+          type: 'BID_HOLD',
+          amount: -dto.amount,
+          balance: Number(bidderWallet.balance) - dto.amount,
+          status: 'COMPLETED',
+          referenceId: auctionId,
+          referenceType: 'auction_bid_hold',
+          description: `Bid hold for auction`,
+        },
+      });
+
+      // 3. Release hold from previous top bidder (if any)
+      const previousTopBid = await tx.bid.findFirst({
+        where: { auctionId },
+        orderBy: { amount: 'desc' },
+      });
+      if (previousTopBid && previousTopBid.bidderId !== bidderId) {
+        const prevWallet = await tx.wallet.findUnique({
+          where: { userId: previousTopBid.bidderId },
+        });
+        if (prevWallet) {
+          await tx.wallet.update({
+            where: { id: prevWallet.id },
+            data: { balance: { increment: Number(previousTopBid.amount) } },
+          });
+          await tx.transaction.create({
+            data: {
+              walletId: prevWallet.id,
+              type: 'BID_RELEASE',
+              amount: Number(previousTopBid.amount),
+              balance: Number(prevWallet.balance) + Number(previousTopBid.amount),
+              status: 'COMPLETED',
+              referenceId: auctionId,
+              referenceType: 'auction_bid_release',
+              description: `Bid released - outbid on auction`,
+            },
+          });
+        }
+      }
+
+      // 4. Create bid record
       const newBid = await tx.bid.create({
         data: {
           auctionId,
@@ -188,7 +242,7 @@ export class AuctionsService {
         include: { bidder: { select: { id: true, firstName: true, lastName: true } } },
       });
 
-      // Update auction price
+      // 5. Update auction price
       await tx.auction.update({
         where: { id: auctionId },
         data: {
