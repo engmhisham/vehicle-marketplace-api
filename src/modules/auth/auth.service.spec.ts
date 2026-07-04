@@ -200,7 +200,7 @@ describe('AuthService', () => {
       mockPrisma.refreshToken.update.mockResolvedValue({});
       mockRedis.set.mockResolvedValue(undefined);
 
-      const result = await service.logout('user-1', 'refresh-token');
+      const result = await service.logout('user-1', 'access-token', 'refresh-token');
 
       expect(result.message).toBe('Logged out successfully');
       expect(mockPrisma.refreshToken.update).toHaveBeenCalled();

@@ -115,8 +115,11 @@ export class AuthService {
       throw new UnauthorizedException('Account is deactivated');
     }
 
-    // If user has password, verify it
-    if (user.password && dto.password) {
+    // If user has a password set, require password authentication
+    if (user.password) {
+      if (!dto.password) {
+        throw new UnauthorizedException('Password is required');
+      }
       const isPasswordValid = await bcrypt.compare(dto.password, user.password);
       if (!isPasswordValid) {
         throw new UnauthorizedException('Invalid credentials');
@@ -141,9 +144,8 @@ export class AuthService {
       };
     }
 
-    // OTP-based login
+    // OTP-based login (only for accounts without password)
     const otp = await this.otpService.generateOtp(dto.phone);
-    this.logger.log(`Login OTP sent to ${dto.phone}: ${otp.code}`);
 
     return {
       message: 'OTP sent to your phone number',
@@ -170,25 +172,27 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // Check if token exists in DB
-    const storedToken = await this.prisma.refreshToken.findUnique({
-      where: { token: refreshToken },
-    });
-
-    if (!storedToken || storedToken.revokedAt) {
-      throw new UnauthorizedException('Invalid refresh token');
-    }
-
-    // Revoke old refresh token (rotation)
-    await this.prisma.refreshToken.update({
-      where: { id: storedToken.id },
+    // Atomically revoke old token - use updateMany with WHERE revokedAt IS NULL
+    // This prevents race conditions: only the first request will match
+    const result = await this.prisma.refreshToken.updateMany({
+      where: { token: refreshToken, revokedAt: null },
       data: { revokedAt: new Date() },
     });
 
+    // If no rows updated, token was already revoked (race condition or replay attack)
+    if (result.count === 0) {
+      throw new UnauthorizedException('Token has already been used');
+    }
+
     // Blacklist old token in Redis
-    const ttl = Math.floor((storedToken.expiresAt.getTime() - Date.now()) / 1000);
-    if (ttl > 0) {
-      await this.redisService.set(`blacklist:${refreshToken}`, '1', ttl);
+    const storedToken = await this.prisma.refreshToken.findUnique({
+      where: { token: refreshToken },
+    });
+    if (storedToken) {
+      const ttl = Math.floor((storedToken.expiresAt.getTime() - Date.now()) / 1000);
+      if (ttl > 0) {
+        await this.redisService.set(`blacklist:${refreshToken}`, '1', ttl);
+      }
     }
 
     // Generate new token pair
@@ -197,7 +201,11 @@ export class AuthService {
     return tokens;
   }
 
-  async logout(userId: string, refreshToken: string) {
+  async logout(userId: string, accessToken: string, refreshToken: string) {
+    // Blacklist the current access token (short TTL - 15 minutes max)
+    const accessTtl = 900; // 15 minutes (max access token lifetime)
+    await this.redisService.set(`blacklist:${accessToken}`, '1', accessTtl);
+
     // Revoke refresh token in DB
     const storedToken = await this.prisma.refreshToken.findUnique({
       where: { token: refreshToken },
@@ -209,7 +217,7 @@ export class AuthService {
         data: { revokedAt: new Date() },
       });
 
-      // Blacklist in Redis
+      // Blacklist refresh token in Redis
       const ttl = Math.floor((storedToken.expiresAt.getTime() - Date.now()) / 1000);
       if (ttl > 0) {
         await this.redisService.set(`blacklist:${refreshToken}`, '1', ttl);
@@ -236,7 +244,6 @@ export class AuthService {
     }
 
     const otp = await this.otpService.generateOtp(phone);
-    this.logger.log(`Password reset OTP sent to ${phone}: ${otp.code}`);
 
     return {
       message: 'If this phone number is registered, you will receive an OTP',

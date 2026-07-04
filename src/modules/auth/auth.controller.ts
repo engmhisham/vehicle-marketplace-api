@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, HttpCode, HttpStatus, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
@@ -64,8 +64,9 @@ export class AuthController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Logout and revoke refresh token' })
   @ApiResponse({ status: 200, description: 'Logged out successfully' })
-  async logout(@CurrentUser() user: JwtPayload, @Body() dto: RefreshTokenDto) {
-    return this.authService.logout(user.sub, dto.refreshToken);
+  async logout(@CurrentUser() user: JwtPayload, @Body() dto: RefreshTokenDto, @Req() req: any) {
+    const accessToken = req.headers.authorization?.replace('Bearer ', '') || '';
+    return this.authService.logout(user.sub, accessToken, dto.refreshToken);
   }
 
   @UseGuards(JwtAuthGuard)
