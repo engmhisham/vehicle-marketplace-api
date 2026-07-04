@@ -37,6 +37,7 @@ import { HealthModule } from './modules/health/health.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { MetricsController } from './common/controllers/metrics.controller';
 
@@ -118,6 +119,11 @@ import { MetricsController } from './common/controllers/metrics.controller';
     {
       provide: APP_INTERCEPTOR,
       useClass: LoggingInterceptor,
+    },
+    // Global Idempotency Interceptor
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: IdempotencyInterceptor,
     },
     // Global JWT Auth Guard
     {
