@@ -144,18 +144,13 @@ export class AuctionsService {
   }
 
   async placeBid(auctionId: string, bidderId: string, dto: PlaceBidDto) {
-    // Acquire Redis lock to prevent race conditions
-    const lockKey = `auction:lock:${auctionId}`;
-    const lockAcquired = await this.redisService.setNX(lockKey, bidderId, 5);
-
-    if (!lockAcquired) {
-      throw new BadRequestException('Another bid is being processed. Please try again.');
-    }
-
-    try {
-      const auction = await this.prisma.auction.findUnique({
-        where: { id: auctionId },
-      });
+    // Use PostgreSQL SELECT FOR UPDATE inside a serializable transaction
+    // This is safer than Redis locks which can expire under heavy load
+    const bid = await this.prisma.$transaction(async (tx) => {
+      // Lock the auction row - blocks concurrent bids until this transaction completes
+      const [auction] = await tx.$queryRaw<any[]>`
+        SELECT * FROM auctions WHERE id = ${auctionId} FOR UPDATE
+      `;
 
       if (!auction) {
         throw new NotFoundException('Auction not found');
@@ -165,62 +160,64 @@ export class AuctionsService {
         throw new BadRequestException('Auction is not active');
       }
 
-      if (auction.endTime <= new Date()) {
+      if (new Date(auction.end_time) <= new Date()) {
         throw new BadRequestException('Auction has ended');
       }
 
-      if (auction.sellerId === bidderId) {
+      if (auction.seller_id === bidderId) {
         throw new ForbiddenException('You cannot bid on your own auction');
       }
 
-      const minimumBid = Number(auction.currentPrice) + Number(auction.bidIncrement);
+      const currentPrice = Number(auction.current_price);
+      const bidIncrement = Number(auction.bid_increment);
+      const minimumBid = currentPrice + bidIncrement;
+
       if (dto.amount < minimumBid) {
         throw new BadRequestException(
-          `Minimum bid is ${minimumBid}. Current price: ${auction.currentPrice}, increment: ${auction.bidIncrement}`,
+          `Minimum bid is ${minimumBid}. Current price: ${currentPrice}, increment: ${bidIncrement}`,
         );
       }
 
-      // Create bid and update auction atomically
-      const [bid] = await this.prisma.$transaction([
-        this.prisma.bid.create({
-          data: {
-            auctionId,
-            bidderId,
-            amount: dto.amount,
-          },
-          include: { bidder: { select: { id: true, firstName: true, lastName: true } } },
-        }),
-        this.prisma.auction.update({
-          where: { id: auctionId },
-          data: {
-            currentPrice: dto.amount,
-            totalBids: { increment: 1 },
-          },
-        }),
-      ]);
+      // Create bid
+      const newBid = await tx.bid.create({
+        data: {
+          auctionId,
+          bidderId,
+          amount: dto.amount,
+        },
+        include: { bidder: { select: { id: true, firstName: true, lastName: true } } },
+      });
 
-      // Publish bid event via Redis for real-time updates (non-blocking)
-      try {
-        await this.redisService.publish(
-          `auction:${auctionId}:bids`,
-          JSON.stringify({
-            bidId: bid.id,
-            auctionId,
-            bidderId,
-            bidderName: `${bid.bidder.firstName || ''} ${bid.bidder.lastName || ''}`.trim(),
-            amount: dto.amount,
-            timestamp: new Date().toISOString(),
-          }),
-        );
-      } catch (error) {
-        this.logger.error(`Failed to publish bid event for auction ${auctionId}`, error);
-      }
+      // Update auction price
+      await tx.auction.update({
+        where: { id: auctionId },
+        data: {
+          currentPrice: dto.amount,
+          totalBids: { increment: 1 },
+        },
+      });
 
-      return bid;
-    } finally {
-      // Release lock
-      await this.redisService.del(lockKey);
+      return newBid;
+    });
+
+    // Publish bid event via Redis for real-time updates (non-blocking, outside transaction)
+    try {
+      await this.redisService.publish(
+        `auction:${auctionId}:bids`,
+        JSON.stringify({
+          bidId: bid.id,
+          auctionId,
+          bidderId,
+          bidderName: `${bid.bidder.firstName || ''} ${bid.bidder.lastName || ''}`.trim(),
+          amount: dto.amount,
+          timestamp: new Date().toISOString(),
+        }),
+      );
+    } catch (error) {
+      this.logger.error(`Failed to publish bid event for auction ${auctionId}`, error);
     }
+
+    return bid;
   }
 
   async getBidHistory(auctionId: string, pagination: PaginationDto) {

@@ -105,25 +105,31 @@ describe('AuctionsService', () => {
   });
 
   describe('placeBid', () => {
-    it('should place a valid bid', async () => {
-      mockRedis.setNX.mockResolvedValue(true);
-      mockPrisma.auction.findUnique.mockResolvedValue({
-        id: 'auction-1',
-        sellerId: 'seller-1',
-        status: 'ACTIVE',
-        currentPrice: 10000,
-        bidIncrement: 500,
-        endTime: new Date(Date.now() + 86400000),
-      });
-
+    it('should place a valid bid using DB transaction', async () => {
       const bidResult = {
         id: 'bid-1',
         amount: 10500,
         bidder: { id: 'user-1', firstName: 'Ahmed', lastName: 'M' },
       };
-      mockPrisma.$transaction.mockResolvedValue([bidResult, {}]);
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const txMock = {
+          $queryRaw: jest.fn().mockResolvedValue([
+            {
+              id: 'auction-1',
+              seller_id: 'seller-1',
+              status: 'ACTIVE',
+              current_price: 10000,
+              bid_increment: 500,
+              end_time: new Date(Date.now() + 86400000),
+            },
+          ]),
+          bid: { create: jest.fn().mockResolvedValue(bidResult) },
+          auction: { update: jest.fn().mockResolvedValue({}) },
+        };
+        return cb(txMock);
+      });
       mockRedis.publish.mockResolvedValue(undefined);
-      mockRedis.del.mockResolvedValue(undefined);
 
       const result = await service.placeBid('auction-1', 'user-1', { amount: 10500 });
 
@@ -132,16 +138,21 @@ describe('AuctionsService', () => {
     });
 
     it('should reject bid below minimum', async () => {
-      mockRedis.setNX.mockResolvedValue(true);
-      mockPrisma.auction.findUnique.mockResolvedValue({
-        id: 'auction-1',
-        sellerId: 'seller-1',
-        status: 'ACTIVE',
-        currentPrice: 10000,
-        bidIncrement: 500,
-        endTime: new Date(Date.now() + 86400000),
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const txMock = {
+          $queryRaw: jest.fn().mockResolvedValue([
+            {
+              id: 'auction-1',
+              seller_id: 'seller-1',
+              status: 'ACTIVE',
+              current_price: 10000,
+              bid_increment: 500,
+              end_time: new Date(Date.now() + 86400000),
+            },
+          ]),
+        };
+        return cb(txMock);
       });
-      mockRedis.del.mockResolvedValue(undefined);
 
       await expect(service.placeBid('auction-1', 'user-1', { amount: 10200 })).rejects.toThrow(
         BadRequestException,
@@ -149,27 +160,35 @@ describe('AuctionsService', () => {
     });
 
     it('should prevent seller from bidding on own auction', async () => {
-      mockRedis.setNX.mockResolvedValue(true);
-      mockPrisma.auction.findUnique.mockResolvedValue({
-        id: 'auction-1',
-        sellerId: 'seller-1',
-        status: 'ACTIVE',
-        currentPrice: 10000,
-        bidIncrement: 500,
-        endTime: new Date(Date.now() + 86400000),
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const txMock = {
+          $queryRaw: jest.fn().mockResolvedValue([
+            {
+              id: 'auction-1',
+              seller_id: 'seller-1',
+              status: 'ACTIVE',
+              current_price: 10000,
+              bid_increment: 500,
+              end_time: new Date(Date.now() + 86400000),
+            },
+          ]),
+        };
+        return cb(txMock);
       });
-      mockRedis.del.mockResolvedValue(undefined);
 
       await expect(service.placeBid('auction-1', 'seller-1', { amount: 10500 })).rejects.toThrow(
         ForbiddenException,
       );
     });
 
-    it('should handle race condition with lock', async () => {
-      mockRedis.setNX.mockResolvedValue(false);
+    it('should throw NotFoundException when auction not found', async () => {
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const txMock = { $queryRaw: jest.fn().mockResolvedValue([]) };
+        return cb(txMock);
+      });
 
       await expect(service.placeBid('auction-1', 'user-1', { amount: 10500 })).rejects.toThrow(
-        BadRequestException,
+        NotFoundException,
       );
     });
   });
