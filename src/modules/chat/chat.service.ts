@@ -11,7 +11,15 @@ export class ChatService {
     private readonly redisService: RedisService,
   ) {}
 
-  async sendMessage(senderId: string, dto: SendMessageDto) {
+  async sendMessage(senderId: string, dto: SendMessageDto, idempotencyKey?: string) {
+    // Check idempotency: return existing message if key was already used
+    if (idempotencyKey) {
+      const cached = await this.redisService.get(`idempotency:chat:${idempotencyKey}`);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    }
+
     // Find or create chat room
     const room = await this.findOrCreateRoom(senderId, dto.recipientId, dto.vehicleId);
 
@@ -50,6 +58,13 @@ export class ChatService {
       // Log but don't fail - message is already persisted in DB
       const logger = new Logger('ChatService');
       logger.error(`Failed to publish chat event for room ${room.id}`, error);
+    }
+
+    // Store idempotency result (24h TTL)
+    if (idempotencyKey) {
+      await this.redisService
+        .set(`idempotency:chat:${idempotencyKey}`, JSON.stringify(message), 86400)
+        .catch(() => {});
     }
 
     return message;

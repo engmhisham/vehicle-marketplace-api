@@ -1,5 +1,15 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Body,
+  Param,
+  Query,
+  Headers,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiHeader } from '@nestjs/swagger';
 import { ChatService } from './chat.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -15,9 +25,18 @@ export class ChatController {
 
   @Post('messages')
   @ApiOperation({ summary: 'Send a message' })
+  @ApiHeader({
+    name: 'x-idempotency-key',
+    required: false,
+    description: 'Unique key to prevent duplicate messages',
+  })
   @ApiResponse({ status: 201, description: 'Message sent' })
-  async sendMessage(@CurrentUser() user: JwtPayload, @Body() dto: SendMessageDto) {
-    return this.chatService.sendMessage(user.sub, dto);
+  async sendMessage(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: SendMessageDto,
+    @Headers('x-idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.chatService.sendMessage(user.sub, dto, idempotencyKey);
   }
 
   @Get('rooms')
