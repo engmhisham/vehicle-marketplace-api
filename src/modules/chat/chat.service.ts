@@ -67,16 +67,13 @@ export class ChatService {
       orderBy: { lastMessageAt: 'desc' },
     });
 
-    // Get unread counts from Redis
-    const roomsWithUnread = await Promise.all(
-      rooms.map(async (room) => {
-        const unread = await this.redisService.hget(`unread:${userId}`, room.id);
-        return {
-          ...room,
-          unreadCount: parseInt(unread || '0', 10),
-        };
-      }),
-    );
+    // Get all unread counts in a single Redis call (avoids N+1)
+    const unreadMap = await this.redisService.getClient().hgetall(`unread:${userId}`);
+
+    const roomsWithUnread = rooms.map((room) => ({
+      ...room,
+      unreadCount: parseInt(unreadMap[room.id] || '0', 10),
+    }));
 
     return roomsWithUnread;
   }

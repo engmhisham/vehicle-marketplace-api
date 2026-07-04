@@ -13,7 +13,10 @@ import { RedisService } from '../../redis/redis.service';
 
 @WebSocketGateway({
   namespace: '/chat',
-  cors: { origin: '*' },
+  cors: {
+    origin: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'],
+    credentials: true,
+  },
 })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -53,13 +56,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   handleDisconnect(client: Socket) {
-    const userId = client.handshake.query.userId as string;
-    if (userId) {
-      const sockets = (this.userSockets.get(userId) || []).filter((id) => id !== client.id);
-      if (sockets.length === 0) {
+    // Clean up from all user entries (handles missing userId case)
+    for (const [userId, sockets] of this.userSockets.entries()) {
+      const filtered = sockets.filter((id) => id !== client.id);
+      if (filtered.length === 0) {
         this.userSockets.delete(userId);
-      } else {
-        this.userSockets.set(userId, sockets);
+      } else if (filtered.length !== sockets.length) {
+        this.userSockets.set(userId, filtered);
       }
     }
     this.logger.log(`Chat client disconnected: ${client.id}`);

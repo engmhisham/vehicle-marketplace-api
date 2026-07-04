@@ -13,7 +13,10 @@ import { RedisService } from '../../redis/redis.service';
 
 @WebSocketGateway({
   namespace: '/auctions',
-  cors: { origin: '*' },
+  cors: {
+    origin: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'],
+    credentials: true,
+  },
 })
 export class AuctionsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()

@@ -11,7 +11,10 @@ import { RedisService } from '../../redis/redis.service';
 
 @WebSocketGateway({
   namespace: '/notifications',
-  cors: { origin: '*' },
+  cors: {
+    origin: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'],
+    credentials: true,
+  },
 })
 export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
